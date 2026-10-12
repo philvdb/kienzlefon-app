@@ -235,7 +235,7 @@ echo json_encode([$exports,$replies]);
     def test_sms_rendering_card_table_plaintext_and_polling_focus(self):
         source = (self.site / "telepraxis-app.php").read_text()
         names = ["escapeHtml", "createCommentItems", "createReceivedSmsHistory", "createCard",
-                 "createCardActions", "createHeader", "createSelectionControl", "createTable",
+                 "createCardActions", "createHeader", "createPhoneActions", "createSelectionControl", "createTable",
                  "tableActionButtons", "selectionChecked", "buildCardText", "captureTransientState", "restoreTransientState"]
         functions = []
         for name in names:
@@ -245,6 +245,7 @@ echo json_encode([$exports,$replies]);
             functions.append(source[start:start + 1 + end.start()])
         program = "\n".join(functions) + r'''
 const assert = require('node:assert/strict');
+const t2medEnabled = false;
 const selected = {middle:new Set(),right:new Set(),trash:new Set()};
 const comment = {kind:'sms_received',text:'<script>unsafe</script>\nSMS Text',
     created_at_display:'29.09.2026 12:02',sms_sender:'<img src=x onerror=evil()>'};

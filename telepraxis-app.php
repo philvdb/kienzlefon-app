@@ -1,9 +1,14 @@
 <?php
 /*
  * telepraxis-app.php
- * Version: 3.5
+ * Version: 3.6
  *
  * Fortgeführter Changelog (niemals entfernen, nur ergänzen):
+ * - v3.6 (2026-10-12)
+ *   - Optionale T2med-Middleware über Einstellungen im Dateikopf: Telefonnummer wählt, kleiner „Akte“-Knopf öffnet die Patientenakte.
+ *   - Benutzer und Platz getrennt in Kopfzeile und Menü: Benutzer ist Bearbeiter, Platz wird als client_id an die Middleware übergeben.
+ *   - Benutzerbezogene Vorgänge, Kommentare und SMS; vorhandene Bearbeiterangaben bleiben als Rückfallwerte erhalten.
+ *   - Bookmarks mit benutzer und/oder arbeitsplatz; bei Teil-Bookmarks bleibt das andere Feld bewusst leer. Beide Angaben werden separat im Browser gespeichert.
  * - v3.5 (2026-09-29)
  *   - SMS-Funktionen als neue App-Version freigegeben: persistente Versandqueue, eigenständiger Empfangsworker und sichere Routerbereinigung.
  *   - Weitere SMS zum zuletzt angelegten offenen Vorgang als farbige chronologische Kommentare mit Benachrichtigungston; automatische Bestätigung nur für die erste SMS je Vorgang und nur an vollständige deutsche Rufnummern.
@@ -109,12 +114,19 @@ define('TELEPRAXIS_APP', true);
 require_once __DIR__ . '/telepraxis-sms.php';
 
 const TELEPRAXIS_APP_NAME = 'kienzlefon app';
-const TELEPRAXIS_APP_VERSION = '3.5';
+const TELEPRAXIS_APP_VERSION = '3.6';
 const TELEPRAXIS_INBOX_DIR = __DIR__ . DIRECTORY_SEPARATOR . 'inbox';
 const TELEPRAXIS_POLL_INTERVAL_MS = 5000;
 const TELEPRAXIS_DEFAULT_TIMEZONE = 'Europe/Berlin';
 const TELEPRAXIS_ADMIN_PASSWORD = 'bitte-aendern';
 const TELEPRAXIS_WORKPLACE_MAXLEN = 64;
+const TELEPRAXIS_USER_MAXLEN = 64;
+
+// Optionale kienzlefon-t2med-Anbindung. Hier aktivieren und die eigene Basisadresse
+// eintragen, z.B. http://middleware.example:8765 (ohne /waehlen oder Parameter).
+// Der Platz aus der Kopfzeile ist die client_id; telefon kommt aus dem Vorgang.
+const TELEPRAXIS_T2MED_ENABLED = false;
+const TELEPRAXIS_T2MED_BASE_URL = '';
 
 function tp_now_iso(): string
 {
@@ -174,6 +186,13 @@ function tp_sanitize_workplace(?string $value): string
     }
     $value = preg_replace('/[^a-zA-Z0-9_-]+/', '', $value) ?? '';
     return substr($value, 0, TELEPRAXIS_WORKPLACE_MAXLEN);
+}
+
+function tp_sanitize_user(?string $value): string
+{
+    $value = preg_replace('/[\x00-\x1F\x7F]/u', '', (string)$value) ?? '';
+    $chars = preg_split('//u', trim($value), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    return implode('', array_slice($chars, 0, TELEPRAXIS_USER_MAXLEN));
 }
 
 function tp_normalize_phone(?string $value): string
@@ -282,6 +301,12 @@ function tp_ensure_entry_app(array $entry): array
     if (!isset($entry['app']) || !is_array($entry['app'])) {
         $entry['app'] = [];
     }
+    if (!array_key_exists('status_updated_benutzer', $entry['app'])) {
+        $entry['app']['status_updated_benutzer'] = tp_sanitize_user((string)($entry['app']['status_updated_arbeitsplatz'] ?? ''));
+    }
+    if (!array_key_exists('deleted_benutzer', $entry['app'])) {
+        $entry['app']['deleted_benutzer'] = $entry['app']['deleted_arbeitsplatz'] ?? null;
+    }
     $entry['app'] = array_merge($defaults, $entry['app']);
 
     if (!in_array($entry['app']['status'], ['neu', 'in_bearbeitung', 'abgeschlossen'], true)) {
@@ -315,6 +340,9 @@ function tp_normalize_comments($comments): array
             'created_at' => (string)($comment['created_at'] ?? tp_now_iso()),
             'workplace' => tp_sanitize_workplace((string)($comment['workplace'] ?? '')),
         ];
+        if (array_key_exists('benutzer', $comment)) {
+            $item['benutzer'] = tp_sanitize_user((string)$comment['benutzer']);
+        }
         if ($isSms) {
             $item['kind'] = 'sms_received';
             $item['sms_received_key'] = (string)$comment['sms_received_key'];
@@ -537,6 +565,8 @@ function tp_sms_queue_comments(string $fileName): array
                 'created_at' => (string)$job['created_at'],
                 'created_at_display' => tp_format_datetime((string)$job['created_at']),
                 'workplace' => (string)$job['workplace'],
+                // Die bestehende Queue-Spalte workplace transportiert weiterhin den Autor.
+                'benutzer' => (string)$job['workplace'],
                 'sms_job_id' => (string)$job['id'],
                 'sms_status' => (string)$job['status'],
             ];
@@ -577,6 +607,7 @@ function tp_build_entry_view(array $entry, string $fileName): array
             'created_at' => (string)($comment['created_at'] ?? ''),
             'created_at_display' => tp_format_datetime((string)($comment['created_at'] ?? '')),
             'workplace' => tp_sanitize_workplace((string)($comment['workplace'] ?? '')),
+            'benutzer' => tp_sanitize_user((string)($comment['benutzer'] ?? $comment['workplace'] ?? '')),
             'kind' => (string)($comment['kind'] ?? ''),
             'sms_received_key' => (string)($comment['sms_received_key'] ?? ''),
             'sms_sender' => (string)($comment['sms_sender'] ?? ''),
@@ -618,8 +649,10 @@ function tp_build_entry_view(array $entry, string $fileName): array
         'last_updated_at' => (string)($entry['app']['status_updated_at'] ?? ''),
         'last_updated_display' => tp_format_datetime((string)($entry['app']['status_updated_at'] ?? '')),
         'last_workplace' => (string)($entry['app']['status_updated_arbeitsplatz'] ?? ''),
+        'last_user' => tp_sanitize_user((string)($entry['app']['status_updated_benutzer'] ?? '')),
         'deleted_at_display' => tp_format_datetime((string)($entry['app']['deleted_at'] ?? '')),
         'deleted_workplace' => (string)($entry['app']['deleted_arbeitsplatz'] ?? ''),
+        'deleted_user' => tp_sanitize_user((string)($entry['app']['deleted_benutzer'] ?? '')),
         'comments' => $comments,
     ];
 }
@@ -803,12 +836,13 @@ function tp_action_response(array $entry, string $file): void
     ]);
 }
 
-function tp_apply_status(array $entry, string $status, string $workplace): array
+function tp_apply_status(array $entry, string $status, string $workplace, string $user): array
 {
     $entry = tp_ensure_entry_app($entry);
     $entry['app']['status'] = $status;
     $entry['app']['status_updated_at'] = tp_now_iso();
     $entry['app']['status_updated_arbeitsplatz'] = $workplace;
+    $entry['app']['status_updated_benutzer'] = $user;
     $entry['app']['last_action'] = 'status_' . $status;
 
     if ($status === 'in_bearbeitung') {
@@ -820,7 +854,7 @@ function tp_apply_status(array $entry, string $status, string $workplace): array
     return $entry;
 }
 
-function tp_append_comment(array $entry, string $text, string $workplace, string $lastAction): array
+function tp_append_comment(array $entry, string $text, string $workplace, string $lastAction, string $user): array
 {
     $entry = tp_ensure_entry_app($entry);
     if (!isset($entry['app']['comments']) || !is_array($entry['app']['comments'])) {
@@ -830,9 +864,11 @@ function tp_append_comment(array $entry, string $text, string $workplace, string
         'text' => $text,
         'created_at' => tp_now_iso(),
         'workplace' => $workplace,
+        'benutzer' => $user,
     ];
     $entry['app']['status_updated_at'] = tp_now_iso();
     $entry['app']['status_updated_arbeitsplatz'] = $workplace;
+    $entry['app']['status_updated_benutzer'] = $user;
     $entry['app']['last_action'] = $lastAction;
     return $entry;
 }
@@ -874,6 +910,12 @@ function tp_handle_api(): void
     tp_require_csrf();
     $file = (string)($_POST['file'] ?? '');
     $workplace = tp_sanitize_workplace((string)($_POST['workplace'] ?? ''));
+    // Alte Clients können weiterhin workplace als Bearbeiter senden. Ein explizit
+    // leeres Benutzerfeld der neuen App darf jedoch niemals den Platz übernehmen.
+    $user = tp_sanitize_user((string)($_POST['benutzer'] ?? $workplace));
+    if ($user === '' && in_array($action, ['set_status', 'toggle_urgent', 'soft_delete', 'add_comment', 'send_sms', 'restore', 'purge'], true)) {
+        tp_json_response(['ok' => false, 'error' => 'Bitte zuerst einen Benutzer eintragen.'], 400);
+    }
 
     try {
         if ($action === 'set_status') {
@@ -881,18 +923,19 @@ function tp_handle_api(): void
             if (!in_array($status, ['neu', 'in_bearbeitung', 'abgeschlossen'], true)) {
                 tp_json_response(['ok' => false, 'error' => 'Ungültiger Status.'], 400);
             }
-            $updated = tp_update_file($file, function (array $entry) use ($status, $workplace): array {
-                return tp_apply_status($entry, $status, $workplace);
+            $updated = tp_update_file($file, function (array $entry) use ($status, $workplace, $user): array {
+                return tp_apply_status($entry, $status, $workplace, $user);
             });
             tp_action_response($updated, $file);
         }
 
         if ($action === 'toggle_urgent') {
-            $updated = tp_update_file($file, function (array $entry) use ($workplace): array {
+            $updated = tp_update_file($file, function (array $entry) use ($workplace, $user): array {
                 $entry = tp_ensure_entry_app($entry);
                 $entry['app']['dringend'] = !$entry['app']['dringend'];
                 $entry['app']['status_updated_at'] = tp_now_iso();
                 $entry['app']['status_updated_arbeitsplatz'] = $workplace;
+                $entry['app']['status_updated_benutzer'] = $user;
                 $entry['app']['last_action'] = $entry['app']['dringend'] ? 'urgent_on' : 'urgent_off';
                 return $entry;
             });
@@ -900,13 +943,15 @@ function tp_handle_api(): void
         }
 
         if ($action === 'soft_delete') {
-            $updated = tp_update_file($file, function (array $entry) use ($workplace): array {
+            $updated = tp_update_file($file, function (array $entry) use ($workplace, $user): array {
                 $entry = tp_ensure_entry_app($entry);
                 $entry['app']['deleted'] = true;
                 $entry['app']['deleted_at'] = tp_now_iso();
                 $entry['app']['deleted_arbeitsplatz'] = $workplace;
+                $entry['app']['deleted_benutzer'] = $user;
                 $entry['app']['status_updated_at'] = tp_now_iso();
                 $entry['app']['status_updated_arbeitsplatz'] = $workplace;
+                $entry['app']['status_updated_benutzer'] = $user;
                 $entry['app']['last_action'] = 'soft_delete';
                 return $entry;
             });
@@ -918,8 +963,8 @@ function tp_handle_api(): void
             if ($commentText === '') {
                 tp_json_response(['ok' => false, 'error' => 'Kommentar fehlt.'], 400);
             }
-            $updated = tp_update_file($file, function (array $entry) use ($workplace, $commentText): array {
-                return tp_append_comment($entry, $commentText, $workplace, 'add_comment');
+            $updated = tp_update_file($file, function (array $entry) use ($workplace, $commentText, $user): array {
+                return tp_append_comment($entry, $commentText, $workplace, 'add_comment', $user);
             });
             tp_action_response($updated, $file);
         }
@@ -928,9 +973,6 @@ function tp_handle_api(): void
             $smsText = trim((string)($_POST['sms_text'] ?? ''));
             if ($smsText === '') {
                 tp_json_response(['ok' => false, 'error' => 'SMS-Text fehlt.'], 400);
-            }
-            if ($workplace === '') {
-                tp_json_response(['ok' => false, 'error' => 'Bitte zuerst einen Platz eintragen.'], 400);
             }
 
             $safeFile = basename($file);
@@ -944,8 +986,8 @@ function tp_handle_api(): void
             if (!empty($view['deleted']) || $view['status'] !== 'in_bearbeitung') {
                 tp_json_response(['ok' => false, 'error' => 'SMS nur für Karten in Bearbeitung möglich.'], 400);
             }
-            if ($view['last_workplace'] !== '' && $view['last_workplace'] !== $workplace) {
-                tp_json_response(['ok' => false, 'error' => 'SMS nur am aktuell bearbeitenden Platz möglich.'], 400);
+            if ($view['last_user'] !== '' && $view['last_user'] !== $user) {
+                tp_json_response(['ok' => false, 'error' => 'SMS nur durch den aktuell bearbeitenden Benutzer möglich.'], 400);
             }
 
             $callbackRaw = tp_entry_callback_phone_raw($entry);
@@ -958,7 +1000,8 @@ function tp_handle_api(): void
             if ($requestId !== '' && !preg_match('/^[a-f0-9]{32,64}$/D', $requestId)) {
                 tp_json_response(['ok' => false, 'error' => 'Ungültige SMS-Auftragskennung.'], 400);
             }
-            $context = ['source_file' => $safeFile, 'workplace' => $workplace];
+            // Queue-Schema beibehalten: workplace ist dort die Autorenspalte.
+            $context = ['source_file' => $safeFile, 'workplace' => $user];
             if ($requestId !== '') {
                 $context['request_id'] = $requestId;
             }
@@ -987,8 +1030,8 @@ function tp_handle_api(): void
             }
 
             $commentText = 'SMS an Rückrufnummer ' . (tp_normalize_phone($callbackRaw) ?: $recipient) . ":\n" . $smsText;
-            $updated = tp_update_file($safeFile, function (array $entry) use ($workplace, $commentText): array {
-                return tp_append_comment($entry, $commentText, $workplace, 'send_sms');
+            $updated = tp_update_file($safeFile, function (array $entry) use ($workplace, $commentText, $user): array {
+                return tp_append_comment($entry, $commentText, $workplace, 'send_sms', $user);
             });
             tp_json_response([
                 'ok' => true,
@@ -1003,13 +1046,15 @@ function tp_handle_api(): void
             if (!tp_is_admin()) {
                 tp_json_response(['ok' => false, 'error' => 'Admin erforderlich.'], 403);
             }
-            $updated = tp_update_file($file, function (array $entry) use ($workplace): array {
+            $updated = tp_update_file($file, function (array $entry) use ($workplace, $user): array {
                 $entry = tp_ensure_entry_app($entry);
                 $entry['app']['deleted'] = false;
                 $entry['app']['deleted_at'] = null;
                 $entry['app']['deleted_arbeitsplatz'] = null;
+                $entry['app']['deleted_benutzer'] = null;
                 $entry['app']['status_updated_at'] = tp_now_iso();
                 $entry['app']['status_updated_arbeitsplatz'] = $workplace;
+                $entry['app']['status_updated_benutzer'] = $user;
                 $entry['app']['last_action'] = 'restore';
                 return $entry;
             });
@@ -1052,6 +1097,8 @@ if (isset($_REQUEST['ajax']) || isset($_POST['action'])) {
 }
 
 $initialWorkplace = tp_sanitize_workplace((string)($_GET['arbeitsplatz'] ?? ''));
+$initialUser = tp_sanitize_user((string)($_GET['benutzer'] ?? ''));
+$identityFromUrl = array_key_exists('arbeitsplatz', $_GET) || array_key_exists('benutzer', $_GET);
 $csrfToken = tp_get_csrf_token();
 $adminEnabled = tp_is_admin_enabled();
 $isAdmin = tp_is_admin();
@@ -1255,30 +1302,26 @@ $isAdmin = tp_is_admin();
             font-weight: 600;
             color: var(--text);
         }
-        .place-setup-row {
-            display: flex;
-            align-items: center;
-            justify-content: flex-start;
-            padding: 0 0 2px 0;
-        }
+        .place-setup-row { flex: 0 0 auto; min-width: 0; }
+        .menu-place-input-line label { width: 65px; flex: 0 0 65px; }
+        .phone-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+        .phone-actions .btn-record { padding: 2px 7px; font-size: 0.75rem; border-radius: 6px; text-decoration: none; flex: 0 0 auto; }
+        button.phone-link, button.transmitted-link { border: 0; background: none; padding: 0; font: inherit; text-decoration: underline; cursor: pointer; }
+        .table-phone { margin-top: 5px; font-size: 0.85rem; }
         .place-setup-inner {
             display: flex;
             align-items: center;
             gap: 8px;
-            flex-wrap: wrap;
-            background: var(--panel);
-            border: 1px solid var(--panel-border);
-            border-radius: 14px;
-            padding: 10px 12px;
-            box-shadow: var(--shadow);
+            flex-wrap: nowrap;
         }
         .place-setup-inner label {
             font-size: 0.92rem;
             white-space: nowrap;
         }
         .place-setup-inner input[type="text"] {
-            min-width: 340px;
-            flex: 1 1 340px;
+            min-width: 70px;
+            width: 140px;
+            flex: 0 0 140px;
         }
         .trash-arrow-row {
             position: fixed;
@@ -1768,7 +1811,28 @@ $isAdmin = tp_is_admin();
             .topbar-title-meta { font-size: 0.84rem; }
             .summary-chip { padding: 5px 8px; font-size: 0.78rem; }
             .menu-panel { width: min(340px, calc(100vw - 16px)); }
-            .place-setup-inner input[type="text"] { min-width: 300px; flex-basis: 300px; }
+        }
+        @media (max-width: 1500px) {
+            .topbar-row { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto auto; }
+            .topbar-title { grid-column: 1; grid-row: 1; }
+            .topbar-summary { grid-column: 2; grid-row: 1; }
+            .topbar-row > .summary-toggle-chip { grid-column: 3; grid-row: 1; }
+            .menu-shell { grid-column: 4; grid-row: 1; }
+            .place-setup-row { grid-column: 1 / -1; grid-row: 2; }
+            .place-setup-inner { justify-content: flex-start; }
+            .place-setup-inner input[type="text"] { flex: 0 1 180px; }
+        }
+        @media (max-width: 580px) {
+            .topbar-row { grid-template-columns: minmax(0, 1fr) auto; }
+            .menu-shell { grid-column: 2; }
+            .topbar-summary, .topbar-row > .summary-toggle-chip { display: none; }
+            .topbar-title { max-width: 100%; }
+            .topbar-title-meta { font-size: 0.75rem; }
+            .place-setup-inner { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
+            .place-setup-inner input[type="text"] { width: 100%; min-width: 0; }
+            .place-setup-inner label { grid-column: 1; }
+            .place-setup-inner button { grid-column: 3; grid-row: 1 / 3; }
+            .place-setup-inner input { grid-column: 2; }
         }
     </style>
 </head>
@@ -1776,15 +1840,29 @@ $isAdmin = tp_is_admin();
 <div class="topbar">
     <div class="topbar-row">
         <div class="topbar-title"><span class="topbar-title-app"><?= tp_h(TELEPRAXIS_APP_NAME) ?></span><span class="topbar-title-meta">v<?= tp_h(TELEPRAXIS_APP_VERSION) ?> von Dr. Thomas Kienzle</span></div>
+        <div class="place-setup-row" id="place-setup-row">
+            <div class="place-setup-inner">
+                <label for="user-input-setup">Benutzer</label>
+                <input type="text" id="user-input-setup" value="<?= tp_h($initialUser) ?>" maxlength="<?= TELEPRAXIS_USER_MAXLEN ?>" placeholder="z.B. Julia" autocomplete="off">
+                <label for="workplace-input-setup">Platz</label>
+                <input type="text" id="workplace-input-setup" value="<?= tp_h($initialWorkplace) ?>" maxlength="<?= TELEPRAXIS_WORKPLACE_MAXLEN ?>" placeholder="z.B. empfang-1" autocomplete="off">
+                <button class="btn btn-primary" id="save-workplace-btn-setup" type="button">Speichern</button>
+            </div>
+        </div>
         <div class="topbar-summary" id="header-summary"></div>
         <label class="summary-chip summary-toggle-chip" id="completed-toggle-chip"><span>Abgeschlossen anzeigen</span><input type="checkbox" id="completed-toggle-top" checked></label>
         <div class="menu-shell">
             <button class="hamburger-btn" id="menu-toggle-btn" type="button" aria-expanded="false" aria-controls="header-menu" aria-label="Menü öffnen">☰</button>
             <div class="menu-panel" id="header-menu" hidden>
                 <div class="menu-section">
-                    <div class="menu-heading">Platz</div>
+                    <div class="menu-heading">Benutzer und Platz</div>
                     <div class="menu-line menu-place-input-line">
-                        <input type="text" id="workplace-input-menu" value="<?= tp_h($initialWorkplace) ?>" placeholder='z.B. "Julia", "anm-li" oder "Dr. Meier"'>
+                        <label for="user-input-menu">Benutzer</label>
+                        <input type="text" id="user-input-menu" value="<?= tp_h($initialUser) ?>" maxlength="<?= TELEPRAXIS_USER_MAXLEN ?>" placeholder="z.B. Julia" autocomplete="off">
+                    </div>
+                    <div class="menu-line menu-place-input-line">
+                        <label for="workplace-input-menu">Platz</label>
+                        <input type="text" id="workplace-input-menu" value="<?= tp_h($initialWorkplace) ?>" maxlength="<?= TELEPRAXIS_WORKPLACE_MAXLEN ?>" placeholder="z.B. empfang-1" autocomplete="off">
                     </div>
                     <div class="menu-line menu-place-action-line">
                         <button class="btn btn-primary" id="save-workplace-btn-menu" type="button">Speichern</button>
@@ -1827,13 +1905,6 @@ $isAdmin = tp_is_admin();
 </div>
 
 <div class="app-shell">
-    <div class="place-setup-row" id="place-setup-row" hidden>
-        <div class="place-setup-inner">
-            <label for="workplace-input-setup">Platz</label>
-            <input type="text" id="workplace-input-setup" value="<?= tp_h($initialWorkplace) ?>" placeholder='z.B. "Julia", "anm-li" oder "Dr. Meier"'>
-            <button class="btn btn-primary" id="save-workplace-btn-setup" type="button">Speichern</button>
-        </div>
-    </div>
     <div class="trash-arrow-row" id="trash-arrow-row" hidden>
         <button class="btn" id="trash-arrow-btn" type="button">Papierkorb (↑)</button>
     </div>
@@ -1914,6 +1985,12 @@ $isAdmin = tp_is_admin();
     const csrfToken = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
     const appName = <?= json_encode(TELEPRAXIS_APP_NAME, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
     const appVersion = <?= json_encode(TELEPRAXIS_APP_VERSION, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    const t2medEnabled = <?= TELEPRAXIS_T2MED_ENABLED ? 'true' : 'false' ?>;
+    const t2medBaseUrl = <?= json_encode(TELEPRAXIS_T2MED_BASE_URL, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    const identityFromUrl = <?= $identityFromUrl ? 'true' : 'false' ?>;
+    const userMaxLength = <?= (int)TELEPRAXIS_USER_MAXLEN ?>;
+    const workplaceMaxLength = <?= (int)TELEPRAXIS_WORKPLACE_MAXLEN ?>;
+    let activeIdentity = {user: '', workplace: ''};
     let currentCsrf = csrfToken;
     let isAdmin = <?= $isAdmin ? 'true' : 'false' ?>;
     let audioContext = null;
@@ -1941,6 +2018,8 @@ $isAdmin = tp_is_admin();
     };
 
     const els = {
+        userInputMenu: document.getElementById('user-input-menu'),
+        userInputSetup: document.getElementById('user-input-setup'),
         workplaceInputMenu: document.getElementById('workplace-input-menu'),
         workplaceInputSetup: document.getElementById('workplace-input-setup'),
         saveWorkplaceBtnMenu: document.getElementById('save-workplace-btn-menu'),
@@ -1997,12 +2076,27 @@ $isAdmin = tp_is_admin();
     }
 
     function sanitizeWorkplaceValue(value) {
-        return String(value || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '').slice(0, 64);
+        return String(value || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '').slice(0, workplaceMaxLength);
     }
 
-    function savedWorkplace() {
-        return sanitizeWorkplaceValue(localStorage.getItem('telepraxis_workplace') || '');
+    function sanitizeUserValue(value) {
+        return Array.from(String(value || '').replace(/[\x00-\x1F\x7F]/g, '').trim()).slice(0, userMaxLength).join('');
     }
+
+    function setUserInputs(value, source = null) {
+        [els.userInputMenu, els.userInputSetup].forEach(input => {
+            if (input && input !== source) input.value = value;
+        });
+    }
+
+    function draftIdentity() {
+        return {
+            user: sanitizeUserValue(els.userInputMenu?.value ?? ''),
+            workplace: sanitizeWorkplaceValue(els.workplaceInputMenu?.value ?? ''),
+        };
+    }
+
+    function currentUser() { return activeIdentity.user; }
 
     function setWorkplaceInputs(value, source = null) {
         if (els.workplaceInputMenu && source !== els.workplaceInputMenu) {
@@ -2014,8 +2108,7 @@ $isAdmin = tp_is_admin();
     }
 
     function currentWorkplace() {
-        const raw = els.workplaceInputMenu?.value ?? els.workplaceInputSetup?.value ?? '';
-        return sanitizeWorkplaceValue(raw);
+        return activeIdentity.workplace;
     }
 
     function setMenuOpen(isOpen) {
@@ -2035,7 +2128,7 @@ $isAdmin = tp_is_admin();
         }
 
         let guard = 0;
-        while (row.scrollWidth > row.clientWidth && guard < 20) {
+        while ((row.scrollWidth > row.clientWidth || container.scrollWidth > container.clientWidth) && guard < 20) {
             guard += 1;
             const lastVisible = [...items].reverse().find(item => !item.hidden);
             if (lastVisible) {
@@ -2087,12 +2180,14 @@ $isAdmin = tp_is_admin();
     }
 
     function loadLocalSettings() {
-        const storedWorkplace = localStorage.getItem('telepraxis_workplace');
-        if (storedWorkplace && !currentWorkplace()) {
-            setWorkplaceInputs(sanitizeWorkplaceValue(storedWorkplace));
-        } else if (!storedWorkplace && currentWorkplace()) {
-            localStorage.setItem('telepraxis_workplace', currentWorkplace());
+        // Ein Teil-Bookmark ist eine bewusste Vorgabe: fehlende Felder bleiben leer.
+        // Der alte Schlüssel telepraxis_workplace enthielt oft einen Personennamen;
+        // ihn niemals stillschweigend als neue Middleware-client_id übernehmen.
+        if (!identityFromUrl) {
+            setUserInputs(sanitizeUserValue(localStorage.getItem('telepraxis_user') ?? localStorage.getItem('telepraxis_workplace') ?? ''));
+            setWorkplaceInputs(sanitizeWorkplaceValue(localStorage.getItem('telepraxis_client_id') || ''));
         }
+        activeIdentity = draftIdentity();
         const soundEnabled = localStorage.getItem('telepraxis_sound_enabled');
         els.soundToggle.checked = soundEnabled === null ? true : soundEnabled === '1';
         const showCompleted = localStorage.getItem('telepraxis_show_completed');
@@ -2116,11 +2211,13 @@ $isAdmin = tp_is_admin();
     }
 
     function saveWorkplace() {
-        const workplace = currentWorkplace();
-        setWorkplaceInputs(workplace);
-        localStorage.setItem('telepraxis_workplace', workplace);
+        activeIdentity = draftIdentity();
+        setUserInputs(currentUser());
+        setWorkplaceInputs(currentWorkplace());
+        localStorage.setItem('telepraxis_user', currentUser());
+        localStorage.setItem('telepraxis_client_id', currentWorkplace());
         hideBookmarkOpen();
-        showMessage(workplace ? `Platz gespeichert: ${workplace}` : 'Platz geleert.');
+        showMessage(`Gespeichert · Benutzer: ${currentUser() || '—'} · Platz: ${currentWorkplace() || '—'}`);
         render(lastEntries);
     }
 
@@ -2162,9 +2259,6 @@ $isAdmin = tp_is_admin();
             } else if (!showTrash && els.trashArrowRow && els.trashArrowBtn.parentElement !== els.trashArrowRow) {
                 els.trashArrowRow.appendChild(els.trashArrowBtn);
             }
-        }
-        if (els.placeSetupRow) {
-            els.placeSetupRow.hidden = savedWorkplace() !== '';
         }
     }
 
@@ -2236,9 +2330,9 @@ $isAdmin = tp_is_admin();
     }
 
     function areaEntries(area) {
-        const workplace = currentWorkplace();
+        const user = currentUser();
         if (area === 'middle') {
-            return lastEntries.filter(entry => !entry.deleted && (entry.status === 'neu' || (entry.status === 'in_bearbeitung' && (workplace === '' || entry.last_workplace !== workplace)))).sort(sortMiddle);
+            return lastEntries.filter(entry => !entry.deleted && (entry.status === 'neu' || (entry.status === 'in_bearbeitung' && (user === '' || entry.last_user !== user)))).sort(sortMiddle);
         }
         if (area === 'right') {
             return lastEntries.filter(entry => !entry.deleted && entry.status === 'abgeschlossen').sort(sortRight);
@@ -2336,6 +2430,38 @@ $isAdmin = tp_is_admin();
         return `<label class="selection-row"><input type="checkbox" data-select-area="${escapeHtml(area)}" data-select-file="${escapeHtml(entry.file)}"${checked}> <span>Auswählen</span></label>`;
     }
 
+    function t2medUrl(action, rawPhone) {
+        if (!t2medEnabled || !currentWorkplace()) return '';
+        const phone = String(rawPhone || '').trim().replace(/[\s()./\-]/g, '');
+        if (!/^\+?[0-9]{3,}$/.test(phone)) return '';
+        try {
+            const url = new URL(t2medBaseUrl);
+            if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return '';
+            url.pathname = `${url.pathname.replace(/\/+$/, '')}/${action}`;
+            url.searchParams.set('client_id', currentWorkplace());
+            url.searchParams.set('telefon', phone);
+            if (action === 'waehlen') url.searchParams.set('sofort', '1');
+            return url.toString();
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function createPhoneActions(display, telHref, rawPhone, cssClass = 'phone-link') {
+        if (!telHref) return `<span class="${cssClass}">${escapeHtml(display || '—')}</span>`;
+        if (!t2medEnabled) return `<a class="${cssClass}" href="tel:${escapeHtml(telHref)}">${escapeHtml(display || '')}</a>`;
+        const callUrl = t2medUrl('waehlen', rawPhone);
+        const recordUrl = t2medUrl('patient-oeffnen', rawPhone);
+        const reason = !currentWorkplace() ? 'Bitte zuerst einen Platz eintragen und speichern.' : 'Middleware-Adresse oder Telefonnummer ist ungültig. Bitte Einstellungen prüfen.';
+        const phone = callUrl
+            ? `<a class="${cssClass}" href="${escapeHtml(callUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" title="Rückruf starten">${escapeHtml(display || '')}</a>`
+            : `<button type="button" class="${cssClass}" data-t2med-unavailable="${escapeHtml(reason)}">${escapeHtml(display || '')}</button>`;
+        const record = recordUrl
+            ? `<a class="btn btn-record" href="${escapeHtml(recordUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" aria-label="Patientenakte öffnen" title="Patientenakte öffnen">Akte</a>`
+            : `<button type="button" class="btn btn-record" data-t2med-unavailable="${escapeHtml(reason)}" title="${escapeHtml(reason)}">Akte</button>`;
+        return `<span class="phone-actions">${phone}${record}</span>`;
+    }
+
     function createHeader(entry) {
         const nameLine = entry.person_display
             ? `
@@ -2347,13 +2473,11 @@ $isAdmin = tp_is_admin();
                 </div>`
             : '';
 
-        const phoneNode = entry.telephone_href
-            ? `<a class="phone-link" href="tel:${escapeHtml(entry.telephone_href)}">${escapeHtml(entry.telephone_display || '')}</a>`
-            : `<span class="phone-link">${escapeHtml(entry.telephone_display || '—')}</span>`;
+        const phoneNode = createPhoneActions(entry.telephone_display, entry.telephone_href, entry.telephone_raw);
 
         const urgentNode = entry.urgent ? '<span class="urgent-mark">!</span>' : '';
-        const workplaceNode = (entry.status === 'in_bearbeitung' && entry.last_workplace)
-            ? `<span class="workplace-chip" title="${escapeHtml(entry.last_workplace)}">bei Platz ${escapeHtml(entry.last_workplace)}</span>`
+        const workplaceNode = (entry.status === 'in_bearbeitung' && entry.last_user)
+            ? `<span class="workplace-chip" title="${escapeHtml(entry.last_user)}">bei ${escapeHtml(entry.last_user)}</span>`
             : '';
 
         return `
@@ -2382,7 +2506,7 @@ $isAdmin = tp_is_admin();
                 <div class="comments-list">
                     ${comments.map(comment => `
                         <div class="comment-item${comment.kind === 'sms_received' ? ' comment-item-sms' : ''}">
-                            <div class="comment-meta">${comment.kind === 'sms_received' ? `<span class="comment-sms-label">SMS eingegangen</span> · ${escapeHtml(comment.created_at_display || '—')} · von ${escapeHtml(comment.sms_sender || '—')}` : `${escapeHtml(comment.created_at_display || '—')} · Platz: ${escapeHtml(comment.workplace || '—')}`}</div>
+                            <div class="comment-meta">${comment.kind === 'sms_received' ? `<span class="comment-sms-label">SMS eingegangen</span> · ${escapeHtml(comment.created_at_display || '—')} · von ${escapeHtml(comment.sms_sender || '—')}` : `${escapeHtml(comment.created_at_display || '—')} · Benutzer: ${escapeHtml(comment.benutzer || '—')}`}</div>
                             <div class="comment-text">${escapeHtml(comment.text || '')}</div>
                         </div>`).join('')}
                 </div>
@@ -2430,9 +2554,7 @@ $isAdmin = tp_is_admin();
             ? `<div class="detail-block"><details data-summary-file="${escapeHtml(entry.file || '')}"${isSummaryOpen ? ' open' : ''}><summary>Zusammenfassung des Gesprächs</summary><p>${escapeHtml(entry.summary)}</p></details></div>`
             : '';
         const transmittedValue = entry.transmitted_phone_display || '—';
-        const transmittedNode = entry.transmitted_phone_href
-            ? `<a class="transmitted-link" href="tel:${escapeHtml(entry.transmitted_phone_href)}">${escapeHtml(transmittedValue)}</a>`
-            : `<span>${escapeHtml(transmittedValue)}</span>`;
+        const transmittedNode = createPhoneActions(transmittedValue, entry.transmitted_phone_href, entry.transmitted_phone_raw, 'transmitted-link');
         return `
             ${summaryBlock}
             <div class="transmitted-row"><strong>Übermittelte Telefonnummer:</strong> ${transmittedNode}</div>
@@ -2547,7 +2669,7 @@ $isAdmin = tp_is_admin();
                         <tr class="${rowClass}${urgentClass}">
                             <td>${createSelectionControl(area, entry, true)}</td>
                             <td>${escapeHtml(entry.category_label || '—')}</td>
-                            <td class="table-patient"><div class="table-name">${name}${birth}</div><div class="table-received">${escapeHtml(entry.received_at_display || '—')}</div></td>
+                            <td class="table-patient"><div class="table-name">${name}${birth}</div><div class="table-received">${escapeHtml(entry.received_at_display || '—')}</div>${t2medEnabled ? `<div class="table-phone">${createPhoneActions(entry.telephone_display, entry.telephone_href, entry.telephone_raw)}</div>` : ''}</td>
                             <td><div class="table-preview${area === 'middle' || area === 'right' ? ' table-preview-clamped' : ''}" title="${escapeHtml(entry.body || '—')}">${escapeHtml(entry.body || '—')}</div>${createReceivedSmsHistory(entry)}</td>
                             ${hasDeletedCol ? `<td class="table-received">${escapeHtml(entry.deleted_at_display || '—')}</td>` : ''}
                             <td>${tableActionButtons(entry, area)}</td>
@@ -2570,6 +2692,7 @@ $isAdmin = tp_is_admin();
             ['dringend', 'Dringend', dringend],
             ['bearbeitung', 'In Bearbeitung', bearbeitung],
             ['abgeschlossen', 'Abgeschlossen', abgeschlossen],
+            ['benutzer', 'Benutzer', currentUser() || '—'],
             ['platz', 'Platz', workplace],
         ];
         if (els.headerSummary) {
@@ -2610,13 +2733,13 @@ $isAdmin = tp_is_admin();
     function render(entries) {
         const transient = captureTransientState();
         lastEntries = Array.isArray(entries) ? entries : [];
-        const workplace = currentWorkplace();
-        const left = lastEntries.filter(entry => !entry.deleted && entry.status === 'in_bearbeitung' && workplace !== '' && entry.last_workplace === workplace).sort(sortLeft);
+        const user = currentUser();
+        const left = lastEntries.filter(entry => !entry.deleted && entry.status === 'in_bearbeitung' && user !== '' && entry.last_user === user).sort(sortLeft);
         const middle = areaEntries('middle');
         const right = areaEntries('right');
         const trash = areaEntries('trash');
 
-        els.leftColumn.innerHTML = left.length ? left.map(entry => createCard(entry, 'left')).join('') : createEmpty(workplace ? 'Keine Vorgänge in Bearbeitung.' : 'Bitte zuerst einen Platz eintragen.');
+        els.leftColumn.innerHTML = left.length ? left.map(entry => createCard(entry, 'left')).join('') : createEmpty(user ? 'Keine Vorgänge in Bearbeitung.' : 'Bitte zuerst einen Benutzer eintragen.');
         els.middleBody.innerHTML = renderArea('middle', middle);
         els.rightBody.innerHTML = renderArea('right', right);
         els.trashBody.innerHTML = renderArea('trash', trash);
@@ -2645,6 +2768,7 @@ $isAdmin = tp_is_admin();
         if (entry.person_birth_date) lines.push(`Geburtsdatum: ${entry.person_birth_date}`);
         lines.push(`Telefon: ${entry.telephone_display || '—'}`);
         lines.push(`Eingang: ${entry.received_at_display || '—'}`);
+        if (entry.last_user) lines.push(`Benutzer: ${entry.last_user}`);
         if (entry.last_workplace) lines.push(`Platz: ${entry.last_workplace}`);
         lines.push('');
         lines.push('Inhalt:');
@@ -2663,7 +2787,7 @@ $isAdmin = tp_is_admin();
             comments.forEach(comment => {
                 lines.push(comment.kind === 'sms_received'
                     ? `SMS eingegangen · ${comment.created_at_display || '—'} · von ${comment.sms_sender || '—'}`
-                    : `${comment.created_at_display || '—'} · Platz: ${comment.workplace || '—'}`);
+                    : `${comment.created_at_display || '—'} · Benutzer: ${comment.benutzer || '—'}`);
                 lines.push(comment.text || '');
                 lines.push('');
             });
@@ -2734,8 +2858,8 @@ $isAdmin = tp_is_admin();
             return;
         }
         const workplace = currentWorkplace();
-        if (!workplace) {
-            showMessage('Bitte zuerst einen Platz eintragen.', true);
+        if (!currentUser()) {
+            showMessage('Bitte zuerst einen Benutzer eintragen.', true);
             return;
         }
         const formData = new FormData();
@@ -2743,6 +2867,7 @@ $isAdmin = tp_is_admin();
         formData.set('action', 'add_comment');
         formData.set('file', file);
         formData.set('workplace', workplace);
+        formData.set('benutzer', currentUser());
         formData.set('comment_text', draft);
         try {
             await apiRequest(formData);
@@ -2763,8 +2888,8 @@ $isAdmin = tp_is_admin();
             return;
         }
         const workplace = currentWorkplace();
-        if (!workplace) {
-            showMessage('Bitte zuerst einen Platz eintragen.', true);
+        if (!currentUser()) {
+            showMessage('Bitte zuerst einen Benutzer eintragen.', true);
             return;
         }
 
@@ -2775,12 +2900,12 @@ $isAdmin = tp_is_admin();
         }
 
         let request = smsRequestIds.get(file);
-        if (!request || request.text !== draft || request.recipient !== entry.sms_phone_href || request.workplace !== workplace) {
+        if (!request || request.text !== draft || request.recipient !== entry.sms_phone_href || request.user !== currentUser()) {
             const bytes = new Uint8Array(16);
             window.crypto.getRandomValues(bytes);
             request = {
                 id: Array.from(bytes, value => value.toString(16).padStart(2, '0')).join(''),
-                text: draft, recipient: entry.sms_phone_href, workplace,
+                text: draft, recipient: entry.sms_phone_href, user: currentUser(),
             };
             smsRequestIds.set(file, request);
         }
@@ -2790,6 +2915,7 @@ $isAdmin = tp_is_admin();
         formData.set('action', 'send_sms');
         formData.set('file', file);
         formData.set('workplace', workplace);
+        formData.set('benutzer', currentUser());
         formData.set('sms_text', draft);
         formData.set('sms_request_id', request.id);
 
@@ -2875,6 +3001,7 @@ $isAdmin = tp_is_admin();
         formData.set('action', action);
         formData.set('file', target.getAttribute('data-file') || '');
         formData.set('workplace', currentWorkplace());
+        formData.set('benutzer', currentUser());
         if (target.hasAttribute('data-status')) {
             formData.set('status', target.getAttribute('data-status') || '');
         }
@@ -2893,6 +3020,7 @@ $isAdmin = tp_is_admin();
             formData.set('action', action);
             formData.set('file', file);
             formData.set('workplace', currentWorkplace());
+            formData.set('benutzer', currentUser());
             Object.entries(extra).forEach(([key, value]) => formData.set(key, value));
             await apiRequest(formData);
         }
@@ -3002,14 +3130,16 @@ $isAdmin = tp_is_admin();
     }
 
     async function createBookmarkLink() {
-        const workplace = currentWorkplace();
-        if (!workplace) {
-            showMessage('Bitte zuerst einen Platz eintragen.', true);
+        const identity = draftIdentity();
+        if (!identity.user && !identity.workplace) {
+            showMessage('Bitte Benutzer oder Platz für den Bookmark-Link eintragen.', true);
             return;
         }
         const url = new URL(window.location.href);
         url.search = '';
-        url.searchParams.set('arbeitsplatz', workplace);
+        url.hash = '';
+        if (identity.workplace) url.searchParams.set('arbeitsplatz', identity.workplace);
+        if (identity.user) url.searchParams.set('benutzer', identity.user);
         lastBookmarkUrl = url.toString();
         await copyText(lastBookmarkUrl);
         els.bookmarkOpenBtn.hidden = false;
@@ -3017,6 +3147,12 @@ $isAdmin = tp_is_admin();
     }
 
     document.addEventListener('click', event => {
+        const unavailable = event.target.closest('[data-t2med-unavailable]');
+        if (unavailable) {
+            event.preventDefault();
+            showMessage(unavailable.dataset.t2medUnavailable, true);
+            return;
+        }
         const actionButton = event.target.closest('[data-action]');
         if (actionButton) {
             event.preventDefault();
@@ -3179,13 +3315,15 @@ $isAdmin = tp_is_admin();
     els.trashRestoreBtn?.addEventListener('click', () => performBatch('trash', 'restore'));
     els.trashDeleteBtn?.addEventListener('click', () => performBatch('trash', 'delete'));
     function handleWorkplaceInputEvent(event) {
-        const value = sanitizeWorkplaceValue(event.target.value || '');
-        setWorkplaceInputs(value, event.target);
+        if (event.target === els.userInputMenu || event.target === els.userInputSetup) {
+            setUserInputs(event.target.value, event.target);
+        } else {
+            setWorkplaceInputs(event.target.value, event.target);
+        }
         hideBookmarkOpen();
-        renderStats(lastEntries);
     }
 
-    [els.workplaceInputMenu, els.workplaceInputSetup].forEach(input => {
+    [els.userInputMenu, els.userInputSetup, els.workplaceInputMenu, els.workplaceInputSetup].forEach(input => {
         input?.addEventListener('keydown', event => {
             if (event.key === 'Enter') {
                 event.preventDefault();

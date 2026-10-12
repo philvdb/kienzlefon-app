@@ -434,7 +434,7 @@ esac
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         content = (self.webroot / "telepraxis-app.php").read_text()
         self.assertIn("const TELEPRAXIS_APP_NAME = 'kienzlefon app';", content)
-        self.assertIn("const TELEPRAXIS_APP_VERSION = '3.4.2';", content)
+        self.assertIn("const TELEPRAXIS_APP_VERSION = '3.6';", content)
         self.assertIn("const TELEPRAXIS_POLL_INTERVAL_MS = 4000 + 250;", content)
 
     def run_in_process(self, updater, *extra):

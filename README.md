@@ -2,11 +2,11 @@
 
 Kompakte Ein(zwei)-Dateien-Webapp zur Bearbeitung eingehender JSON-Vorgänge aus dem Verzeichnis `./inbox`.
 
-Die **kienzlefon app** hieß bisher **telepraxis-app**. Die aktuelle Version **3.5**
-vom 29.09.2026 umfasst die neue SMS-Queue, den Empfang, weitere SMS als farbige
-Kommentare, die einmalige Bestätigung und den Benachrichtigungston. Dateinamen,
-technische Bezeichner und Pfade bleiben unverändert; die bisherigen Screenshots
-zeigen noch ältere Versionen und den alten Namen.
+Die **kienzlefon app** hieß bisher **telepraxis-app**. Die aktuelle Version **3.6**
+vom 12.10.2026 ergänzt die optionale T2med-Anbindung und trennt Benutzer und
+Platz. SMS-Queue, Empfang, farbige SMS-Kommentare, einmalige Bestätigung und
+Benachrichtigungston bleiben erhalten. Die bisherigen Screenshots zeigen noch
+ältere Versionen und den alten Namen.
 
 Die Haupt-App bleibt `telepraxis-app.php`. Für SMS-Versand wird zusätzlich `telepraxis-sms.php` als separate Funktionsdatei eingebunden; die Konfiguration erfolgt über `sms-config.php`.
 
@@ -18,13 +18,95 @@ Die Haupt-App bleibt `telepraxis-app.php`. Für SMS-Versand wird zusätzlich `te
 Die App ist für mehrere Arbeitsplätze gedacht:
 
 - **Neu**: neue eingegangene Vorgänge
-- **In Bearbeitung**: nur die Vorgänge des aktuell eingestellten eigenen Arbeitsplatzes
+- **In Bearbeitung**: nur die Vorgänge des aktuell eingestellten Benutzers
 - **Abgeschlossen**: erledigte Vorgänge
 - **Papierkorb**: gelöschte Vorgänge, nur mit Admin-Funktion sichtbar
 
-Ein Arbeitsplatz wird oben eingetragen und lokal im Browser gespeichert. Dadurch sieht jeder Arbeitsplatz links nur seine eigenen bearbeiteten Vorgänge, während Vorgänge anderer Arbeitsplätze weiter in der mittleren Spalte sichtbar bleiben.
+**Benutzer** und **Platz** werden in der Kopfzeile oder im Hamburger-Menü
+eingetragen und mit **Speichern** (oder Enter) übernommen. Benutzer bezeichnet
+den Bearbeiter, etwa `Julia` oder `Dr. Müller`. Der Platz bezeichnet den
+Telefonplatz, etwa `empfang-1`, und wird als `client_id` an T2med übergeben.
+Die Angaben werden getrennt im Browser gespeichert. Änderungen in den
+Eingabefeldern gelten erst nach Speichern für Vorgänge und Telefonaktionen.
+
+Links erscheinen die Vorgänge des eigenen Benutzers, auch nach einem Wechsel
+des Platzes. Vorgänge anderer Benutzer bleiben in der mittleren Spalte sichtbar.
+Kommentare, Statusänderungen, Papierkorb-Aktionen und SMS werden dem Benutzer
+zugeordnet. Für Bearbeitungsaktionen ist ein Benutzer erforderlich; für die
+optionalen T2med-Aktionen zusätzlich ein Platz.
+
+Der Button **Bookmark-Link** berücksichtigt die aktuell ausgefüllten Felder,
+auch wenn nur eines gesetzt ist:
+
+```text
+telepraxis-app.php?benutzer=Julia&arbeitsplatz=empfang-1
+telepraxis-app.php?arbeitsplatz=empfang-1
+telepraxis-app.php?benutzer=Julia
+```
+
+Enthält die URL eines dieser Felder, bleiben nicht mitgegebene Felder bewusst
+leer: Ein Platz-Bookmark fragt deshalb nach dem Benutzer und übernimmt keinen
+zuletzt gespeicherten Namen. Ohne diese URL-Parameter gelten die gespeicherten
+Angaben. Ein früher gespeicherter `Platz` wird beim ersten Start ohne Parameter
+als bisheriger Bearbeiter übernommen; der neue Telefonplatz wird separat gesetzt.
+Alte Vorgänge und Kommentare behalten ihre bisherigen Bearbeiterangaben als
+Rückfallwerte. Die sichtbare Bezeichnung `Platz` und der URL-Parameter
+`arbeitsplatz` bleiben erhalten.
 
 Die App lädt die Daten regelmäßig neu und eignet sich damit für den laufenden Einsatz im Praxisalltag.
+
+## Optionale kienzlefon-t2med-Anbindung
+
+Die Einstellungen stehen wie bisher im Kopf von `telepraxis-app.php`.
+Standardmäßig ist die Anbindung ausgeschaltet. Zum Aktivieren beide Konstanten
+anpassen; die Beispieladresse durch die eigene Middleware-Adresse ersetzen:
+
+```php
+const TELEPRAXIS_T2MED_ENABLED = true;
+const TELEPRAXIS_T2MED_BASE_URL = 'http://middleware.example:8765';
+```
+
+Die Basisadresse darf HTTP oder HTTPS verwenden und enthält weder Endpunkt
+noch Query-Parameter oder Zugangsdaten. Sie muss vom Browser des Arbeitsplatzes
+erreichbar sein. Eine zusätzliche Middleware-Konfiguration in der Oberfläche
+ist nicht nötig.
+
+- **Telefonnummer anklicken:** `/waehlen?client_id=<Platz>&telefon=<Nummer>&sofort=1`.
+- Kleiner Knopf **Akte** daneben: `/patient-oeffnen?client_id=<Platz>&telefon=<Nummer>`.
+- Beide Aktionen sind auch in den Tabellen verfügbar; in Bearbeitung zusätzlich
+  bei der übermittelten Telefonnummer, jeweils mit der danebenstehenden Nummer.
+- Die Links öffnen einen neuen Tab, damit die App geöffnet bleibt. Sie werden
+  ausschließlich durch einen Klick aufgerufen. Internationales `+` wird als
+  `%2B` kodiert; Benutzer wird nicht an die Middleware gesendet.
+- Bei fehlendem Platz oder ungültiger Konfiguration erscheint ein Hinweis.
+  Bei ausgeschalteter Anbindung bleiben die bisherigen `tel:`-Links aktiv und
+  der Akte-Knopf entfällt.
+
+Die Integration ordnet einen bereits in der Middleware konfigurierten Client zu;
+sie legt dort keine neuen Clients an. Der bisherige Updater v1.0 übernimmt die
+neuen `TELEPRAXIS_T2MED_*`- und `TELEPRAXIS_USER_MAXLEN`-Einstellungen noch nicht
+bei späteren Dateiwechseln; diese Werte danach im Dateikopf kontrollieren.
+
+### Datenkompatibilität und Prüfung
+
+Neue Vorgangsänderungen speichern den Bearbeiter in `status_updated_benutzer`
+und den Platz in `status_updated_arbeitsplatz`; Kommentare enthalten `benutzer`
+und `workplace`. Alte Kommentare werden nicht umgeschrieben. Das vorhandene
+SMS-Queue-Schema bleibt erhalten: Dessen technische Spalte `workplace` enthält
+weiterhin den Autor, ab 3.6 also den Benutzer.
+
+```sh
+php -l telepraxis-app.php
+python3 -m unittest discover -s tests -p 'test_telepraxis_app_v36.py' -v
+python3 -m unittest discover -s tests -p 'test_telepraxis_sms_web_queue.py' -v
+node tests/test_telepraxis_app_browser.cjs
+```
+
+Der Browsertest benötigt Node, Playwright und Chromium (alternativ installiertes
+Chrome mit `PLAYWRIGHT_CHANNEL=chrome`). Er arbeitet mit einer temporären Site
+und synthetischen Daten; Middleware-Aufrufe werden blockiert. Er prüft
+Teil-Bookmarks, Benutzerzuordnung, Linkparameter, lokale Speicherung, Polling,
+Tabellen und die Kopfzeile bei verschiedenen Bildschirmbreiten.
 
 ## Wichtige Funktionen
 

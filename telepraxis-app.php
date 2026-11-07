@@ -4,6 +4,9 @@
  * Version: 3.6
  *
  * Fortgeführter Changelog (niemals entfernen, nur ergänzen):
+ * - Feature-Branch recording-miniplayer (unveröffentlicht; Version bleibt 3.6):
+ *   - Ein einklappbarer HTML5-Player pro Kienzlefon-WAV-Segment, auch bei mehreren Medikamenten.
+ *   - Optionale statische recordings/-Freigabe; Audioelemente bleiben bei Polling-Updates erhalten.
  * - v3.6 (2026-10-12)
  *   - Optionale T2med-Middleware über Einstellungen im Dateikopf: Telefonnummer wählt, kleiner „Akte“-Knopf öffnet die Patientenakte.
  *   - Benutzer und Platz getrennt in Kopfzeile und Menü: Benutzer ist Bearbeiter, Platz wird als client_id an die Middleware übergeben.

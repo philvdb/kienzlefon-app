@@ -12,6 +12,12 @@
 
 Die Dateinamen sind keine aus Telefonnummern geratenen Pfade. Für jeden JSON-Vorgang wird die darin enthaltene `_kienzlefon.vorgang_id` mit dem JSON-Dateinamen verglichen. Die Aufnahme muss unter `audio/<name>.wav` liegen. Leere oder ausdrücklich fehlende Aufnahmen werden übersprungen.
 
+## Wichtig: unabhängig vom Auto-Close-Feature
+
+Dieser Branch startet bei `main` und enthält **nicht** die noch ungemergte Änderung aus `feature/auto-close-patient-tab`. Bei eurer Praxisinstallation sind außerdem die T2med-Konstanten individuell gesetzt. Daher die `telepraxis-app.php` aus diesem Branch **nicht einfach über die produktive Datei kopieren**, weil dies die funktionierende Auto-Close-Funktion und lokale Konfiguration überschreiben kann.
+
+Für einen Praxisversuch die Änderungen zuerst in einem lokalen Checkout mit dem Auto-Close-Branch zusammenführen (beispielsweise mit Git-Merge auf einem separaten Testbranch), dabei die produktiven Konfigurationseinträge beibehalten und erst danach die geprüfte PHP-Datei deployen. Spätere Upstream-Pull-Requests bleiben fachlich getrennt.
+
 ## Installation auf derselben VM wie Kienzlefon
 
 Voraussetzung: `telepraxis-app.php` läuft auf einem Webserver mit direktem Dateizugriff auf den Kienzlefon-Spool. Bei einer getrennten Webserver-VM funktioniert der Symlink **nicht**; dann müsste das Verzeichnis gemountet oder synchronisiert werden.

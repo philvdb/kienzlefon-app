@@ -2678,6 +2678,9 @@ $isAdmin = tp_is_admin();
                 player.preload = 'none';
                 player.src = url;
                 player.setAttribute('aria-label', slot.getAttribute('data-recording-label') || 'Originalaufnahme');
+                player.addEventListener('error', () => {
+                    showMessage('Originalaufnahme nicht erreichbar. recordings-Freigabe und Dateirechte prüfen.', true);
+                });
                 player.addEventListener('play', () => {
                     recordingPlayers.forEach(other => {
                         if (other !== player && !other.paused) other.pause();

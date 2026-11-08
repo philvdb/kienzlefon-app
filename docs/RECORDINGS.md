@@ -56,7 +56,7 @@ Beispiel *innerhalb des passenden Nginx-`server`-Blocks* (vorhandene globale Aut
 
 ```nginx
 # Nur WAV-Dateien aus dem Symlink recordings/ anbieten:
-location ~ ^/recordings/[0-9]{8}_[0-9]{6}_[0-9]{6}/audio/[a-zA-Z0-9_-]+\.wav$ {
+location ~ "^/recordings/[0-9]{8}_[0-9]{6}_[0-9]{6}/audio/[A-Za-z0-9_-]+[.]wav$" {
     try_files $uri =404;
 }
 location /recordings/ {

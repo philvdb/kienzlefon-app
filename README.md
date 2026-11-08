@@ -677,6 +677,24 @@ Die getestete FRITZ!OS-Version liefert lange SMS bereits zusammengesetzt.
 Unbekannte Segment- oder Listenformate werden nicht geraten: Sie bleiben zur
 Prüfung zurückgehalten. Andere Geräte/Firmwarestände müssen gesondert geprüft werden.
 
+## Git-basierte Praxis-Updates ohne Verlust lokaler Einstellungen
+
+Für die Installation auf derselben VM wie Kienzlefon gibt es den neuen
+**`kienzlefon-app-update-v1.1.sh`** mit `--app-only`.
+Er aktualisiert ausschließlich `telepraxis-app.php` aus einem expliziten lokalen
+Git-Checkout und übernimmt die bestehenden Inbox-, Admin-, Benutzer-, T2med-
+und Originalaufnahmen-Konstanten, sofern zuvor vorhanden. Die aus dem Git-Code
+stammenden PHP-Werte werden dafür tokenisiert und nicht anhand von
+Zeilennummern ersetzt. Fehlende Konfigurationskonstanten im neuen Release
+führen zum Abbruch statt zu stillem Datenverlust.
+
+`--check` prüft ohne Eingriff in die laufenden Dienste.
+Das echte Update erstellt ein privates Backup und hat einen automatischen
+Rollback bei fehlgeschlagener Installation/Dienstneustart. Der ursprüngliche
+vollständige Updater v1.0 bleibt erhalten.
+
+**[Konkrete Schritte für die Kienzlefon-VM und Hinweise zu Rollback und Tests](docs/PRAXIS-GIT-UPDATE.md)**.
+
 ## Entwicklung prüfen
 
 Mit PHP CLI, Python 3 und Node.js im `PATH`:

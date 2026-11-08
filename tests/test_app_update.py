@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Integrationstests fuer kienzlefon-app-update-v1.0.sh."""
+"""Integrationstests fuer kienzlefon-app-update-v1.1.sh (inklusive App-only)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-UPDATER = REPOSITORY / "kienzlefon-app-update-v1.0.sh"
+UPDATER = REPOSITORY / "kienzlefon-app-update-v1.1.sh"
 
 
 def load_updater():
@@ -200,6 +200,93 @@ class AppUpdateTests(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertNotIn("Very;Secret", combined)
         self.assertNotIn("Config;Secret", combined)
+
+
+    def test_app_only_works_without_sms_config_and_preserves_local_settings(self) -> None:
+        # The practice only has the app PHP and its shared SMS dependency installed.
+        (self.webroot / "sms-config.php").unlink()
+        (self.webroot / "telepraxis-sms.php").unlink()
+        old_settings = """
+const TELEPRAXIS_USER_MAXLEN = 81;
+const TELEPRAXIS_T2MED_ENABLED = true;
+const TELEPRAXIS_T2MED_BASE_URL = 'http://middleware.example:8766';
+const TELEPRAXIS_RECORDINGS_BASE_URL = 'recordings';
+"""
+        new_settings = """
+const TELEPRAXIS_USER_MAXLEN = 64;
+const TELEPRAXIS_T2MED_ENABLED = false;
+const TELEPRAXIS_T2MED_BASE_URL = '';
+const TELEPRAXIS_RECORDINGS_BASE_URL = '';
+"""
+        write(self.webroot / "telepraxis-app.php", OLD_APP + old_settings, 0o644)
+        write(self.source / "telepraxis-app.php", NEW_APP + new_settings)
+
+        # --check does not change production files, create backups or stop services.
+        before = digest_tree(self.webroot)
+        checked = self.run_update("--app-only", "--check")
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertEqual(digest_tree(self.webroot), before)
+        self.assertFalse(self.backups.exists())
+        self.assertIn("telepraxis-app.php", checked.stdout)
+        self.assertNotIn("sms-config.php", checked.stdout)
+
+        result = self.run_update("--app-only", "--no-service", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        installed = (self.webroot / "telepraxis-app.php").read_text(encoding="utf-8")
+        for line in old_settings.strip().splitlines():
+            self.assertIn(line, installed)
+        self.assertIn("const SOURCE_WEB_MARKER = 'new-web';", installed)
+        self.assertFalse((self.webroot / "sms-config.php").exists())
+        self.assertFalse((self.webroot / "telepraxis-sms.php").exists())
+        backups = list(self.backups.glob("*/manifest.json"))
+        self.assertEqual(len(backups), 1)
+        manifest = json.loads(backups[0].read_text(encoding="utf-8"))
+        self.assertEqual(list(manifest["files"]), ["web/telepraxis-app.php"])
+
+    def test_optional_recordings_constant_is_new_default_when_not_previously_installed(self) -> None:
+        write(
+            self.source / "telepraxis-app.php",
+            NEW_APP + "const TELEPRAXIS_RECORDINGS_BASE_URL = '';\n",
+        )
+        result = self.run_update("--app-only", "--no-service", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        app = (self.webroot / "telepraxis-app.php").read_text(encoding="utf-8")
+        self.assertIn("const TELEPRAXIS_RECORDINGS_BASE_URL = '';", app)
+
+    def test_app_only_refuses_to_discard_existing_t2med_settings(self) -> None:
+        write(self.webroot / "telepraxis-app.php", OLD_APP +
+              "const TELEPRAXIS_T2MED_ENABLED = true;\n")
+        before = digest_tree(self.webroot)
+        result = self.run_update("--app-only", "--no-service", "--yes")
+        self.assert_failed_without_web_mutation(result, before)
+        self.assertIn("Konfigurationsverlust", result.stderr)
+
+    def test_app_only_requires_explicit_local_source(self) -> None:
+        before = digest_tree(self.webroot)
+        result = subprocess.run(
+            [
+                str(UPDATER), "--app-only", "--webroot", str(self.webroot),
+                "--backup-dir", str(self.backups), "--check",
+            ],
+            cwd=REPOSITORY,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            check=False, timeout=30,
+        )
+        self.assert_failed_without_web_mutation(result, before)
+        self.assertIn("--source-dir", result.stderr)
+        self.assertFalse(self.backups.exists())
+
+    def test_app_only_rejects_explicit_sms_worker(self) -> None:
+        before = digest_tree(self.webroot)
+        result = self.run_update("--app-only", "--worker-dir", str(self.root), "--no-service", "--yes")
+        self.assert_failed_without_web_mutation(result, before)
+
+    def test_app_only_does_not_need_sms_source_files(self) -> None:
+        for name in ("telepraxis-sms.php", "sms-config.php", "telepraxis-sms-queue.php"):
+            (self.source / name).unlink()
+        result = self.run_update("--app-only", "--no-service", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("new-web", (self.webroot / "telepraxis-app.php").read_text())
 
     def test_check_makes_no_target_service_or_backup_changes(self) -> None:
         before = digest_tree(self.webroot)

@@ -103,6 +103,10 @@ const net = require('node:net');
         // New and completed table UI continues working, with a compact record link.
         await page.locator('[data-view-target="middle"][data-view-mode="table"]').click();
         assert.equal(await page.locator('#middle-body .btn-record').count(), 1);
+        const middleRowButtons = page.locator('#middle-body .table-actions-middle button');
+        assert.deepEqual(await middleRowButtons.allTextContents(), ['Dringend', 'Bearbeiten']);
+        assert.equal(await middleRowButtons.nth(1).getAttribute('data-status'), 'in_bearbeitung');
+        assert.equal(await page.locator('#middle-body .table-actions-middle').evaluate(el => getComputedStyle(el).flexDirection), 'column');
         // Bookmarks use drafts, allowing one field to be deliberately cleared.
         await page.locator('#menu-toggle-btn').click();
         await page.locator('#bookmark-link-btn').click();
@@ -191,6 +195,12 @@ const net = require('node:net');
         assert.equal(await page.evaluate(() => document.querySelector('.recordings-player-slot audio') === window.__recordingPlayerBeforeRefresh), true);
         await recordingCard.locator('[data-toggle-recordings]').click();
         assert.equal(await recordingCard.locator('audio').count(), 0);
+        // The new table button uses the same ownership transfer as the card action.
+        await page.locator('#middle-body .table-actions-middle [data-action="set_status"][data-status="in_bearbeitung"]').click();
+        await page.waitForFunction(() => document.querySelectorAll('#middle-body .table-actions-middle').length === 0);
+        const transferredEntry = JSON.parse(fs.readFileSync(path.join(site, 'inbox', 'other.json'), 'utf8'));
+        assert.equal(transferredEntry.app.status, 'in_bearbeitung');
+        assert.equal(transferredEntry.app.status_updated_benutzer, 'Julia');
         assert.deepEqual(errors, []);
         assert.deepEqual(external, [], 'No external requests may be made');
         console.log('PASS: bookmarks, storage, ownership, URLs, Akte, tables, polling focus and eight viewport sizes; no external requests.');

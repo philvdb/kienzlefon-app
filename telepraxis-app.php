@@ -4,6 +4,8 @@
  * Version: 3.6
  *
  * Fortgeführter Changelog (niemals entfernen, nur ergänzen):
+ * - 2026-11-09 (Version unverändert: 3.6)
+ *   - Tabellenansicht „Neu“: Button „Bearbeiten“ unter „Dringend“ ergänzt; übernimmt den Vorgang wie in der Kartenansicht in die eigene Bearbeitung.
  * - Feature-Branch recording-miniplayer (unveröffentlicht; Version bleibt 3.6):
  *   - Ein einklappbarer HTML5-Player pro Kienzlefon-WAV-Segment, auch bei mehreren Medikamenten.
  *   - Optionale statische recordings/-Freigabe; Audioelemente bleiben bei Polling-Updates erhalten.
@@ -1631,6 +1633,11 @@ $isAdmin = tp_is_admin();
             justify-content: flex-end;
             flex-wrap: wrap;
         }
+        .table-actions-middle {
+            flex-direction: column;
+            flex-wrap: nowrap;
+            align-items: stretch;
+        }
         .card {
             background: var(--panel);
             border: 1px solid var(--panel-border);
@@ -2787,7 +2794,7 @@ $isAdmin = tp_is_admin();
     function tableActionButtons(entry, area) {
         const file = escapeHtml(entry.file || '');
         if (area === 'middle') {
-            return `<div class="table-actions"><button class="btn ${entry.urgent ? 'btn-danger' : ''}" data-action="toggle_urgent" data-file="${file}">Dringend</button></div>`;
+            return `<div class="table-actions table-actions-middle"><button class="btn ${entry.urgent ? 'btn-danger' : ''}" data-action="toggle_urgent" data-file="${file}">Dringend</button><button class="btn btn-primary" data-action="set_status" data-status="in_bearbeitung" data-file="${file}">Bearbeiten</button></div>`;
         }
         if (area === 'right') {
             return `<div class="table-actions"><button class="btn btn-primary" data-action="set_status" data-status="neu" data-file="${file}">Wiederherstellen</button><button class="btn btn-danger" data-action="soft_delete" data-file="${file}">Löschen</button></div>`;
